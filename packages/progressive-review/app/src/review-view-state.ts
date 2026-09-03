@@ -1,3 +1,13 @@
+import {
+  type JsonObject,
+  type JsonValue,
+  isJsonObject,
+  jsonNumber,
+  jsonObject,
+  jsonProperty,
+  jsonString,
+  parseJsonText,
+} from "@dev.fast/review-protocol";
 import type { ReactNode, RefObject } from "react";
 import {
   createContext,
@@ -112,7 +122,10 @@ export function useReviewViewStateSync({
 
   const persist = useCallback(
     (next: PersistedReviewViewState) => {
-      const normalized = parsePersistedReviewViewState(next);
+      // Normalise exactly as a stored value reads back.
+      const normalized = parsePersistedReviewViewState(
+        parseJsonText(JSON.stringify(next)),
+      );
       if (JSON.stringify(normalized) === JSON.stringify(persistedRef.current)) {
         return;
       }
@@ -210,7 +223,7 @@ export function reviewViewStateKey(config: ReviewClientConfig): string {
 export function readPersistedReviewViewState(
   config: ReviewClientConfig,
 ): PersistedReviewViewState {
-  const value = readReviewUiState<unknown>(
+  const value = readReviewUiState<JsonValue>(
     "session",
     reviewViewStateKey(config),
   );
@@ -394,61 +407,53 @@ function persistedPanelState(
 }
 
 function parsePersistedReviewViewState(
-  value: unknown,
+  value: JsonValue | null,
 ): PersistedReviewViewState {
-  if (!value || typeof value !== "object") return {};
-  const candidate = value as {
-    scrollTop?: unknown;
-    activeView?: unknown;
-    panel?: {
-      thread?: { kind?: unknown; threadId?: unknown };
-      tour?: { tourId?: unknown; activeAnchor?: unknown };
-    };
-    overlayTour?: { tourId?: unknown; activeAnchor?: unknown };
-  };
+  if (!isJsonObject(value)) return {};
   const state: PersistedReviewViewState = {};
+  const scrollTop = jsonNumber(jsonProperty(value, "scrollTop"));
+  if (scrollTop !== undefined && scrollTop >= 0) state.scrollTop = scrollTop;
+  const activeView = jsonString(jsonProperty(value, "activeView"));
   if (
-    typeof candidate.scrollTop === "number" &&
-    Number.isFinite(candidate.scrollTop) &&
-    candidate.scrollTop >= 0
+    activeView === "review" ||
+    activeView === "commits" ||
+    activeView === "map" ||
+    activeView === "diff"
   ) {
-    state.scrollTop = candidate.scrollTop;
+    state.activeView = activeView;
   }
-  if (
-    candidate.activeView === "review" ||
-    candidate.activeView === "commits" ||
-    candidate.activeView === "map" ||
-    candidate.activeView === "diff"
-  ) {
-    state.activeView = candidate.activeView;
-  }
-  const thread =
-    candidate.panel?.thread?.kind === "threads"
-      ? ({ kind: "threads" } as const)
-      : candidate.panel?.thread?.kind === "commentThread" &&
-          typeof candidate.panel.thread.threadId === "string"
-        ? ({
-            kind: "commentThread",
-            threadId: candidate.panel.thread.threadId,
-          } as const)
-        : undefined;
-  const tour =
-    typeof candidate.panel?.tour?.tourId === "string" &&
-    typeof candidate.panel.tour.activeAnchor === "string"
-      ? {
-          tourId: candidate.panel.tour.tourId,
-          activeAnchor: candidate.panel.tour.activeAnchor,
-        }
-      : undefined;
+  const panel = jsonObject(jsonProperty(value, "panel"));
+  const thread = parsePersistedPanelThread(
+    panel && jsonObject(jsonProperty(panel, "thread")),
+  );
+  const tour = parsePersistedTourState(
+    panel && jsonObject(jsonProperty(panel, "tour")),
+  );
   if (thread || tour) state.panel = { thread, tour };
-  if (
-    typeof candidate.overlayTour?.tourId === "string" &&
-    typeof candidate.overlayTour.activeAnchor === "string"
-  ) {
-    state.overlayTour = {
-      tourId: candidate.overlayTour.tourId,
-      activeAnchor: candidate.overlayTour.activeAnchor,
-    };
-  }
+  const overlayTour = parsePersistedTourState(
+    jsonObject(jsonProperty(value, "overlayTour")),
+  );
+  if (overlayTour) state.overlayTour = overlayTour;
   return state;
+}
+
+function parsePersistedPanelThread(
+  thread: JsonObject | undefined,
+): NonNullable<PersistedReviewViewState["panel"]>["thread"] {
+  const kind = jsonString(thread && jsonProperty(thread, "kind"));
+  if (kind === "threads") return { kind };
+  const threadId = jsonString(thread && jsonProperty(thread, "threadId"));
+  return kind === "commentThread" && threadId !== undefined
+    ? { kind, threadId }
+    : undefined;
+}
+
+function parsePersistedTourState(
+  tour: JsonObject | undefined,
+): { tourId: string; activeAnchor: string } | undefined {
+  const tourId = jsonString(tour && jsonProperty(tour, "tourId"));
+  const activeAnchor = jsonString(tour && jsonProperty(tour, "activeAnchor"));
+  return tourId !== undefined && activeAnchor !== undefined
+    ? { tourId, activeAnchor }
+    : undefined;
 }
